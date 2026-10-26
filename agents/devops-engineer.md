@@ -73,10 +73,19 @@ version: 2.1
 
 jobs:
   build-and-test:
-    docker:
-      - image: cimg/openjdk:21.0
+    # Machine executor: a full VM with a local Docker daemon, which Dev Services
+    # (Testcontainers) needs to start containers for @QuarkusTest
+    machine:
+      image: ubuntu-2404:current
     steps:
       - checkout
+      - run:
+          name: Install JDK 21
+          command: |
+            sudo apt-get update && sudo apt-get install -y openjdk-21-jdk-headless
+            echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> "$BASH_ENV"
+            echo 'export PATH="$JAVA_HOME/bin:$PATH"' >> "$BASH_ENV"
+      - run: java -version
       - restore_cache:
           keys:
             - maven-{{ checksum "pom.xml" }}
@@ -116,7 +125,9 @@ workflows:
               only: main
 ```
 
-`setup_remote_docker` only gives a Docker daemon, hence `builder=docker` here. On a self-hosted runner or Red Hat-based CI image where Podman is installed instead, swap to `-Dquarkus.container-image.builder=podman` — same Dockerfile, same generated image, no other pipeline changes.
+The test job runs on a `machine` executor because `./mvnw verify` boots `@QuarkusTest`s, and Dev Services needs a reachable Docker daemon to start their containers. A plain `docker` executor has none, and `setup_remote_docker` is not enough: the containers then run on a separate remote host, so the ports Testcontainers maps are unreachable from the primary container and the tests fail to connect. The machine VM ships Docker but not Podman, so any image build done there also uses `-Dquarkus.container-image.builder=docker`.
+
+The image build needs no published ports, so `setup_remote_docker` is fine there; it only gives a Docker daemon, hence `builder=docker` here too. On a self-hosted runner or Red Hat-based CI image where Podman is installed instead, swap to `-Dquarkus.container-image.builder=podman` — same Dockerfile, same generated image, no other pipeline changes.
 
 ## Rules
 - Prefer Podman for local and CI container/native-image builds (daemonless, rootless, drop-in CLI-compatible with Docker); treat Docker as an equally valid fallback wherever that's what the environment already provides — don't hard-code to one without checking what's installed
