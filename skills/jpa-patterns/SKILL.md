@@ -14,6 +14,7 @@ Best practices and common pitfalls for JPA/Hibernate in Quarkus applications (Hi
 - Transaction management issues
 - Entity relationship design
 - Query optimization
+- Entity `equals()`/`hashCode()` and bulk UPDATE/DELETE queries
 
 ---
 
@@ -26,6 +27,10 @@ Best practices and common pitfalls for JPA/Hibernate in Quarkus applications (Hi
 | Slow queries | Performance issues | Pagination, projections, indexes |
 | Dirty checking overhead | Slow updates | Avoid unnecessary `@Transactional`, use DTOs for pure reads |
 | Lost updates | Concurrent modifications | Optimistic locking (@Version) |
+| Entity lost from a `HashSet` | `equals`/`hashCode` on generated id or all fields | Natural key, or id-based with constant `hashCode` |
+| Missing foreign key / stale collection | Only one side of a bidirectional link updated | `add*`/`remove*` helpers on the parent |
+| Parent deleted with a child | `CascadeType.ALL` on `@ManyToOne` | Cascade parent → children only |
+| Stale entities after bulk query | Bulk `update`/`delete` skips the persistence context | `flush()` before, `clear()` after |
 
 ---
 
@@ -340,6 +345,162 @@ public class ProductService {
 
 ---
 
+## Entity Identity: equals() and hashCode()
+
+```java
+// ✅ GOOD: Business key - stable before and after persist
+@Entity
+public class Book {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @NaturalId  // org.hibernate.annotations.NaturalId
+    @Column(unique = true, nullable = false, updatable = false)
+    private String isbn;
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        return o instanceof Book other && isbn != null && isbn.equals(other.isbn);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(isbn);
+    }
+}
+
+// ✅ GOOD: No natural key - id-based equality, constant hashCode
+@Override
+public boolean equals(Object o) {
+    if (this == o) return true;
+    return o instanceof Order other && id != null && id.equals(other.id);
+}
+
+@Override
+public int hashCode() {
+    return getClass().hashCode();  // Unchanged when the id is assigned on persist
+}
+```
+
+- ❌ Never hash the generated `id` (the entity "disappears" from a `HashSet` after persist) or all fields (mutable fields change the hash, lazy associations trigger loads).
+- Use `instanceof`, not `getClass()`, in `equals` so Hibernate proxies compare equal.
+
+---
+
+## Relationship Mapping
+
+### Bidirectional Helpers
+
+```java
+@Entity
+public class Author {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @OneToMany(mappedBy = "author", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<Book> books = new ArrayList<>();
+
+    // ✅ Keep both sides in sync - the @ManyToOne side owns the foreign key
+    public void addBook(Book book) {
+        books.add(book);
+        book.setAuthor(this);
+    }
+
+    public void removeBook(Book book) {
+        books.remove(book);
+        book.setAuthor(null);
+    }
+
+    public List<Book> getBooks() {
+        return Collections.unmodifiableList(books);  // Force callers through the helpers
+    }
+}
+```
+
+Updating only one side leaves the in-memory graph inconsistent, and if only the inverse (`mappedBy`) side is set, the foreign key is never written.
+
+### @ManyToMany: Use a Set
+
+```java
+@Entity
+public class Student {
+    @ManyToMany(cascade = { CascadeType.PERSIST, CascadeType.MERGE })  // Never REMOVE/ALL
+    @JoinTable(name = "student_course",
+        joinColumns = @JoinColumn(name = "student_id"),
+        inverseJoinColumns = @JoinColumn(name = "course_id"))
+    private Set<Course> courses = new HashSet<>();
+
+    public void addCourse(Course course) {
+        courses.add(course);
+        course.getStudents().add(this);
+    }
+
+    public void removeCourse(Course course) {
+        courses.remove(course);
+        course.getStudents().remove(this);
+    }
+}
+```
+
+With a `List`, Hibernate deletes and re-inserts the whole join table on every change. A `Set` needs the stable `equals()`/`hashCode()` above. If the link carries data (enrolment date, grade), map the join table as its own entity with two `@ManyToOne`s.
+
+### Common Mapping Mistakes
+
+```java
+// ❌ BAD: Cascade on @ManyToOne - removing one book removes the shared author
+@ManyToOne(cascade = CascadeType.ALL)
+private Author author;
+
+// ✅ GOOD: Cascade only from parent to owned children
+@ManyToOne(fetch = FetchType.LAZY)
+private Author author;
+```
+
+```java
+// ❌ BAD: toString() touching a lazy collection - extra query,
+// LazyInitializationException outside a transaction, StackOverflowError on bidirectional links
+@Override
+public String toString() {
+    return "Author{id=" + id + ", books=" + books + "}";
+}
+
+// ✅ GOOD: Basic columns only
+@Override
+public String toString() {
+    return "Author{id=" + id + ", name='" + name + "'}";
+}
+```
+
+The same applies to logging an entity and to JSON serialization: map to DTOs/records instead.
+
+---
+
+## Bulk Updates and Deletes
+
+```java
+@ApplicationScoped
+public class OrderRepository implements PanacheRepository<Order> {
+
+    public int archiveOlderThan(Instant before) {
+        return update("status = ?1 where createdAt < ?2", OrderStatus.ARCHIVED, before);
+    }
+
+    public long purge(OrderStatus status, Instant before) {
+        return delete("status = ?1 and createdAt < ?2", status, before);
+    }
+}
+```
+
+Panache `update(...)`/`delete(...)` run a single bulk statement in the database. They must run inside `@Transactional`, and they bypass the persistence context:
+
+- No lifecycle callbacks (`@PreUpdate`), no cascades, no `@Version` check — increment the version in the query (`version = version + 1`) if concurrent writers rely on optimistic locking.
+- Entities already loaded in the same transaction keep their old state. If the transaction reads them again, call `getEntityManager().flush()` before the bulk statement and `getEntityManager().clear()` after it.
+
+---
+
 ## Modern Hibernate Features
 
 ### Jakarta Persistence
@@ -466,3 +627,5 @@ public class UserRepository implements PanacheRepository<User> {
 | Need only few columns | DTO/record projection (JPQL constructor expression) |
 | Soft delete required | `@SoftDelete` |
 | UUID primary key | `@GeneratedValue(strategy = GenerationType.UUID)` |
+| `@ManyToMany` collection | `Set` + helper methods, cascade `PERSIST`/`MERGE` only |
+| Mass update/delete | Panache `update(...)`/`delete(...)` in `@Transactional` |
