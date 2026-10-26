@@ -44,7 +44,7 @@ Reusable knowledge that Claude loads contextually:
 
 | Skill | What it teaches |
 |-------|-----------------|
-| `quarkus` | Core Quarkus development with 5 reference guides (web, data, security, cloud, testing) |
+| `quarkus` | Core Quarkus development with 6 reference guides (web, data, security, cloud, testing, messaging) |
 | `code-quality` | Clean code principles, API contracts, null safety, exception handling |
 | `design-patterns` | Classic patterns (Factory, Builder, Strategy) + enterprise (Saga, Outbox, CQRS) with CDI |
 | `testing-patterns` | JUnit 5, Mockito, RestAssured, Dev Services (built-in Testcontainers), `@QuarkusIntegrationTest` |
@@ -119,6 +119,7 @@ You can also invoke skills and agents directly:
 │   │   └── references/
 │   │       ├── cloud.md
 │   │       ├── data.md
+│   │       ├── messaging.md
 │   │       ├── security.md
 │   │       ├── testing.md
 │   │       └── web.md

@@ -179,6 +179,7 @@ Load detailed patterns based on context:
 | Security | `references/security.md` | Quarkus Security, OIDC, JWT, method security, Keycloak Dev Services |
 | Cloud/Config | `references/cloud.md` | Service discovery (Stork), resilience, virtual threads, HTTP clients, native image, OTel tracing |
 | Testing | `references/testing.md` | Unit, integration tests, RestAssured, Dev Services |
+| Messaging | `references/messaging.md` | Kafka with SmallRye Reactive Messaging, `Emitter`, `@Incoming`/`@Outgoing`, in-memory channel tests |
 
 For deeper, standalone dives also available as separate skills in this plugin: `jpa-patterns`, `testing-patterns`, `java-modern`, `design-patterns`, `code-quality`, `logging-patterns`.
 
