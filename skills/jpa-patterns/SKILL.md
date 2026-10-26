@@ -259,51 +259,40 @@ public class ProductService {
 
 A single Panache call outside an active transaction runs in its own implicit transaction automatically — you only need `@Transactional` explicitly for multi-step writes, or to keep a lazy association reachable across several calls.
 
-### Self-Invocation Pitfall
+### Self-Invocation and Interceptors
+
+Quarkus supports intercepted self-invocation: a call through `this` to a non-private method
+annotated with `@Transactional` (or any interceptor binding) is intercepted, so a transaction
+starts. This is a Quarkus (ArC) feature; the CDI specification leaves it undefined, so code
+shared with another CDI runtime should not rely on it.
 
 ```java
-// ❌ BAD: @Transactional ignored on self-invocation
 @ApplicationScoped
 public class OrderService {
 
     public void processOrders(List<Long> ids) {
         for (Long id : ids) {
-            processOrder(id);  // Calls via 'this', not the CDI proxy - no transaction!
+            processOrder(id);  // intercepted in Quarkus: each call runs in its own transaction
         }
     }
 
     @Transactional
     public void processOrder(Long id) {
-        // This @Transactional is ignored when called from processOrders()
-    }
-}
-
-// ✅ GOOD: Extract to separate bean
-@ApplicationScoped
-public class OrderService {
-    private final OrderProcessor processor;
-
-    public OrderService(OrderProcessor processor) {
-        this.processor = processor;
-    }
-
-    public void processOrders(List<Long> ids) {
-        for (Long id : ids) {
-            processor.processOrder(id);  // Calls via the CDI proxy
-        }
-    }
-}
-
-@ApplicationScoped
-public class OrderProcessor {
-    @Transactional
-    public void processOrder(Long id) {
-        // Transaction works correctly
+        // ...
     }
 }
 ```
 
-This is a classic proxy pitfall — CDI interceptors (`@Transactional` included) are woven around a proxy, and calling a method via `this` bypasses it entirely.
+Pitfalls that remain:
+- An interceptor binding on a `private` method fails the build by default
+  (`quarkus.arc.fail-on-intercepted-private-method=true`); make the method package-private or public.
+- Each self-invoked `@Transactional` call uses the default `REQUIRED` semantics: if the caller is
+  already transactional, the calls join its transaction instead of committing one by one. Use
+  `@Transactional(REQUIRES_NEW)` when each item must commit independently.
+- Extracting the transactional method into a separate bean is still a valid design choice when it
+  clarifies responsibilities, but it is not required for interception.
+
+See the [CDI reference: intercepted self-invocation](https://quarkus.io/guides/cdi-reference).
 
 ---
 
