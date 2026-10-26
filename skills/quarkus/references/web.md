@@ -304,6 +304,52 @@ public class UserNotFoundExceptionMapper implements ExceptionMapper<UserNotFound
 }
 ```
 
+## OpenAPI & Swagger UI
+
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-smallrye-openapi</artifactId>
+</dependency>
+```
+
+The spec is generated at build time from the JAX-RS resources and served at `/q/openapi`; Swagger UI is at `/q/swagger-ui` in dev and test mode only. Paths, parameters, and record schemas are inferred, so annotate only what can't be (summaries, tags, error responses):
+
+```java
+@Path("/api/users")
+@Tag(name = "Users", description = "User management endpoints")
+public class UserResource {
+    private final UserService userService;
+
+    public UserResource(UserService userService) {
+        this.userService = userService;
+    }
+
+    @GET
+    @Path("/{id}")
+    @Operation(summary = "Get user by ID")
+    @APIResponse(responseCode = "200", description = "User found",
+        content = @Content(mediaType = "application/json",
+            schema = @Schema(implementation = UserResponse.class)))
+    @APIResponse(responseCode = "404", description = "User not found",
+        content = @Content(mediaType = "application/problem+json"))
+    public UserResponse getUser(@PathParam("id") Long id) {
+        return userService.findById(id);
+    }
+}
+```
+
+```properties
+quarkus.smallrye-openapi.info-title=User API
+quarkus.smallrye-openapi.info-version=1.0.0
+# Write the spec to the build output, e.g. to diff it in CI as an API-contract check
+quarkus.smallrye-openapi.store-schema-directory=target/openapi
+# Only if Swagger UI must be served in prod (and then behind auth)
+# quarkus.swagger-ui.always-include=true
+```
+
+The annotations are the MicroProfile OpenAPI ones (`org.eclipse.microprofile.openapi.annotations.*`).
+
 ## Quick Reference
 
 | Annotation | Purpose |
@@ -316,3 +362,4 @@ public class UserNotFoundExceptionMapper implements ExceptionMapper<UserNotFound
 | `@Valid` | Triggers Bean Validation on a parameter |
 | `@Provider` + `ExceptionMapper<T>` | Exception-type-specific response mapping (no global advice class) |
 | `@Status` | Sets the HTTP status code for a resource method |
+| `@Tag` / `@Operation` / `@APIResponse` | Enrich the generated OpenAPI spec (`quarkus-smallrye-openapi`) |

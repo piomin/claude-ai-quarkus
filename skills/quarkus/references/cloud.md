@@ -178,6 +178,39 @@ public class ExternalServiceHealthCheck implements HealthCheck {
 
 `HealthCheck` (`org.eclipse.microprofile.health.HealthCheck`) plus the `@Liveness`/`@Readiness`/`@Startup` qualifier is the MicroProfile Health standard. Both `/q/health/live` and `/q/health/ready` (and the aggregate `/q/health`) exist with zero extra code once the extension is added; see the `kubernetes-specialist` agent for how the generated Kubernetes manifest wires these in as probes automatically, and `devops-engineer`/`security-engineer` for the Prometheus `ServiceMonitor` that gets generated alongside them.
 
+### Custom Metrics
+
+For business metrics, inject `MeterRegistry` and build the meters once, in the constructor:
+
+```java
+@ApplicationScoped
+public class OrderMetrics {
+    private final Counter ordersCreated;
+    private final Counter ordersFailed;
+    private final Timer processing;
+
+    public OrderMetrics(MeterRegistry registry) {
+        this.ordersCreated = Counter.builder("orders.created")
+            .description("Orders successfully created").register(registry);
+        this.ordersFailed = Counter.builder("orders.failed")
+            .description("Orders that failed").register(registry);
+        this.processing = Timer.builder("orders.processing.duration")
+            .description("Time to process an order").register(registry);
+    }
+
+    public <T> T timeProcessing(Supplier<T> work) {
+        return processing.record(work);
+    }
+
+    public void created() { ordersCreated.increment(); }
+    public void failed()  { ordersFailed.increment(); }
+}
+```
+
+- Declarative alternative: `@Counted` / `@Timed` (`io.micrometer.core.annotation`) on CDI bean methods.
+- Keep tag values low-cardinality (status, type) — never user IDs, order IDs, or raw paths.
+- Meter names use dots; the Prometheus registry converts them (`orders.created` → `orders_created_total`).
+
 ## Kubernetes Deployment
 
 Quarkus's `quarkus-kubernetes`/`quarkus-openshift`/`quarkus-knative` extensions **generate** the manifests from the project's code, config, and classpath at build time — including health probes, a Prometheus `ServiceMonitor`, and even a migration `Job` for Flyway/Liquibase, with no YAML to hand-write for the common case. Build and deploy is a single Maven property, not a separate `kubectl apply` step. Full details, properties, and examples live in the `kubernetes-specialist` agent — this is intentionally not duplicated here.
@@ -203,6 +236,23 @@ Native compilation is Quarkus's headline feature, not an opt-in add-on bolted on
 ```
 
 Native executables start in tens of milliseconds and run with a small fraction of the memory footprint of the same app in JVM mode — the trade-off is a notably longer build, and any reflection-based code (some JSON/serialization libraries, certain CDI tricks) needs an explicit `@RegisterForReflection` hint since GraalVM can't discover it by scanning bytecode at build time the way the JVM does at runtime.
+
+```java
+// A class reached only via reflection (Class.forName, polymorphic Jackson by class name, ...)
+@RegisterForReflection
+public record LegacyPayload(String field) {}
+
+// Third-party classes you cannot annotate
+@RegisterForReflection(targets = { com.thirdparty.Payload.class, com.thirdparty.Header.class })
+public class ReflectionConfig {}
+```
+
+```properties
+# Classpath resources read at runtime must be included in the native image explicitly
+quarkus.native.resources.includes=templates/**,certs/*.pem
+```
+
+DTOs consumed and returned by REST resources are registered automatically — registration is only for types reached reflectively. Run `@QuarkusIntegrationTest` against the native build to catch what was missed (see the `testing-patterns` skill).
 
 ## Graceful Shutdown
 

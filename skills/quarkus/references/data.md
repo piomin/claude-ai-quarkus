@@ -68,6 +68,40 @@ public class User extends PanacheEntity {
 
 `PanacheEntity` (active record) gives the entity a generated `Long id` and public-field style with no getters/setters to write — that's Panache's own boilerplate removal. Timestamps use the standard JPA `@PrePersist`/`@PreUpdate` lifecycle callbacks; there's no `@CreatedDate`/`@LastModifiedDate`/auditing-listener combo bundled by default. For `createdBy`/`updatedBy`-style user auditing, set the fields explicitly in the service layer (inject `SecurityIdentity`, see `security.md`) rather than reaching for an entity listener — JPA listener classes aren't CDI beans by default, so DI inside one needs an extra workaround that's rarely worth it.
 
+### Shared Audit Fields in a `@MappedSuperclass`
+
+When several entities carry the same timestamps, declare them and their callbacks once:
+
+```java
+@MappedSuperclass
+public abstract class AuditableEntity extends PanacheEntity {
+
+    @Column(nullable = false, updatable = false)
+    public LocalDateTime createdAt;
+
+    @Column(nullable = false)
+    public LocalDateTime updatedAt;
+
+    @PrePersist
+    void onCreate() {
+        createdAt = LocalDateTime.now();
+        updatedAt = createdAt;
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+}
+
+@Entity
+public class Order extends AuditableEntity {
+    // inherits id, createdAt, updatedAt and the lifecycle callbacks
+}
+```
+
+With the repository pattern, the superclass doesn't need to extend `PanacheEntity`: declare the `@Id` in it (or in each entity) and use `PanacheRepository<Order>` as usual. Hibernate's `@CreationTimestamp`/`@UpdateTimestamp` are a no-callback alternative for the two timestamps.
+
 ## Panache Repository Pattern
 
 Prefer this over the active-record style when the service layer should own persistence logic explicitly:

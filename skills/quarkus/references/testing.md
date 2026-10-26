@@ -166,6 +166,27 @@ class UserResourceTest {
 
 `@InjectMock` (from `quarkus-junit5-mockito`) mocks a single CDI bean without disabling the rest of the application context. `@TestSecurity` (from the `quarkus-test-security` test-scoped dependency) installs a fake `SecurityIdentity` with the given username/roles for the duration of the test, with no real token needed. It only works with `@QuarkusTest`, not `@QuarkusIntegrationTest`.
 
+When the resource reads token claims (`JsonWebToken`, `@Claim`), add `io.quarkus:quarkus-test-security-jwt` (test scope) and put the claims next to `@TestSecurity`:
+
+```java
+@Test
+@DisplayName("Should return the profile built from JWT claims")
+@TestSecurity(user = "alice", roles = "USER")
+@JwtSecurity(claims = {
+    @Claim(key = "email", value = "alice@example.com"),
+    @Claim(key = "upn", value = "alice@example.com")
+})
+void shouldReturnProfileFromJwtClaims() {
+    given()
+        .when().get("/api/v1/profile/me")
+        .then()
+            .statusCode(200)
+            .body("email", is("alice@example.com"));
+}
+```
+
+`@JwtSecurity` and `@Claim` come from `io.quarkus.test.security.jwt`. With `quarkus-oidc`, use `quarkus-test-security-oidc` and `@OidcSecurity` instead.
+
 ## Repository Testing
 
 ```java

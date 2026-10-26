@@ -237,6 +237,22 @@ src/main/java/<base-package>/
 | `@ConfigMapping` | Bind a group of properties to a type-safe interface |
 | `@RolesAllowed` | Method/class-level role-based access control |
 
+## CDI Scopes and Pitfalls
+
+| Scope | Client proxy? | Notes |
+|-------|---------------|-------|
+| `@ApplicationScoped` | Yes (lazy) | Default for services and repositories; mockable with `@InjectMock` |
+| `@Singleton` | No | Slightly cheaper; without a proxy the instance is created as soon as it is injected; not mockable with `@InjectMock` by default |
+| `@RequestScoped` | Yes | Safe to inject into an `@ApplicationScoped` bean — the proxy resolves the current request's instance |
+| `@Dependent` | No | New instance per injection point, bound to the owner's lifecycle |
+
+- Creating a bean with `new` bypasses CDI: no injection and no interceptors (`@Transactional`, `@Timed`, ...). Fine in a plain unit test, wrong in production code.
+- `@ApplicationScoped`/`@Singleton` beans are shared across threads — keep them stateless, or make shared state thread-safe.
+- Don't copy a request-scoped value (e.g. `identity.getPrincipal()`) into a field of an application-scoped bean; inject the proxy and read it per call.
+- Several implementations of one type, or lazy lookup: inject `@Any Instance<T>`.
+- Quarkus removes unused beans at build time; a bean looked up only dynamically (e.g. `CDI.current().select(...)`) needs `@Unremovable`.
+- Startup work: observe `StartupEvent` (`void onStart(@Observes StartupEvent e)`) or annotate the bean with `@Startup`.
+
 ## Reactive Resource (Mutiny)
 
 ```java
