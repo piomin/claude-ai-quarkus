@@ -221,6 +221,62 @@ log.error("Payment failed for order {}: {}", order.getId(), e);
 | `DEBUG` | Technical details. SQL queries, HTTP requests, cache hits |
 | `TRACE` | Verbose internals. Method entry/exit, loop iterations |
 
+### What NOT to Log
+
+```java
+// ❌ NEVER
+log.info("Login user={} password={}", username, password);  // Credentials
+log.debug("Calling API with token {}", jwt);                  // Tokens, API keys, session IDs
+log.info("Payment card={}", cardNumber);                      // Full card number / CVV
+log.info("Created customer {}", customer);                    // toString() may dump email, address, IBAN...
+log.debug("Request body: {}", rawBody);                       // Payloads may contain any of the above
+
+// ✅ Identify, don't expose
+log.info("Login attempted userId={}", userId);
+log.info("Payment authorised cardLast4={}", last4);
+log.info("Created customer customerId={}", customer.id());
+```
+
+- Treat as sensitive: passwords, secrets, tokens, `Authorization`/`Cookie` headers, card data, national IDs, health data, and personal data (email, phone, address, birth date).
+- Records print every component in `toString()` — log the ID, or override `toString()` on records that carry personal data.
+- Keep full request/response bodies and headers out of production logs; if HTTP client logging is needed, keep it at DEBUG.
+
+### Log Once, at the Boundary
+
+```java
+// ❌ BAD: Log-and-rethrow at every layer - the same stack trace appears three times
+try {
+    paymentClient.charge(order);
+} catch (PaymentException e) {
+    log.error("Payment failed", e);
+    throw e;
+}
+
+// ✅ GOOD: Lower layers handle the exception, or wrap it with context and rethrow - no log
+try {
+    paymentClient.charge(order);
+} catch (PaymentException e) {
+    throw new OrderProcessingException("Payment failed for order " + order.getId(), e);
+}
+```
+
+The boundary that turns the exception into a response logs it once, with the request context — in Quarkus that's the catch-all `@Provider` `ExceptionMapper<Exception>` (see `references/web.md` in the `quarkus` skill).
+
+- Expected business errors (not found, validation) are WARN or DEBUG without a stack trace; only unexpected failures are ERROR with the exception.
+- Messaging consumers and scheduled jobs are boundaries too: log once there, then let the retry or failure strategy act.
+
+### Include Context
+
+```java
+// ❌ BAD: Useless when reading the logs later
+log.error("Error occurred", e);
+
+// ✅ GOOD: What failed, for which entity, at which step - exception last
+log.error("Order processing failed orderId={} step={} attempt={}", orderId, "payment", attempt, e);
+```
+
+Context shared by every line of a request (request ID, user ID) belongs in MDC, set once by a filter (see below).
+
 ---
 
 ## MDC (Mapped Diagnostic Context)
@@ -285,6 +341,43 @@ public class OrderService {
 
 Unlike thread-pool-based frameworks — where MDC is plain `ThreadLocal` and needs a decorator to survive a handoff to a different pooled thread — Quarkus stores MDC data in a Vert.x **duplicated context** tied to the request, not to a specific OS thread. A method annotated `@RunOnVirtualThread` inherits that duplicated context automatically, so MDC values set in a `ContainerRequestFilter` are visible inside it with no extra propagation code, even though the filter and the virtual-thread method run on different threads.
 
+### MDC Across Threads
+
+The duplicated context only travels with work that Quarkus manages. Inject a `ManagedExecutor` (MicroProfile Context Propagation) instead of creating your own `ExecutorService`, and MDC values from the request are available in submitted tasks:
+
+```java
+@ApplicationScoped
+public class NotificationService {
+    private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
+
+    private final ManagedExecutor executor;
+
+    public NotificationService(ManagedExecutor executor) {
+        this.executor = executor;
+    }
+
+    public CompletableFuture<Void> sendConfirmationAsync(Order order) {
+        // ✅ requestId/userId from the request's MDC are present in this log line
+        return executor.runAsync(() -> log.info("Sending confirmation"));
+    }
+}
+```
+
+- ❌ `CompletableFuture.runAsync(task)` without an executor runs on the common pool, and a self-created `ExecutorService` doesn't propagate anything — MDC is lost there.
+- If an unmanaged executor can't be avoided, capture the map on the calling thread and restore it in the task, clearing it in `finally` so a pooled thread doesn't leak one request's context into the next:
+
+```java
+Map<String, Object> context = new HashMap<>(MDC.getMap());
+unmanagedExecutor.execute(() -> {
+    context.forEach(MDC::put);
+    try {
+        log.info("Sending confirmation");
+    } finally {
+        MDC.clear();
+    }
+});
+```
+
 ---
 
 ## Quick Reference
@@ -296,5 +389,6 @@ Unlike thread-pool-based frameworks — where MDC is plain `ThreadLocal` and nee
 | `log.error("msg {}", var, exception)` | Log with stack trace |
 | `org.jboss.logging.MDC.put("key", "value")` | Add context to all logs for the request |
 | `MDC.clear()` | Clean up in a `ContainerResponseFilter` |
+| `ManagedExecutor` | Async work that keeps the request's MDC |
 | `quarkus.log.console.json=true` | Enable JSON console logging (`quarkus-logging-json`) |
 | `quarkus.log.console.json.mdc.flat-fields=true` | Flatten MDC into root-level JSON fields |
